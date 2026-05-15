@@ -262,29 +262,14 @@ TokenizedCausalLMDataset = PackedCausalLMDataset
 def _tokenize_document(
     text: str,
     tokenizer,
-    seq_length: int,
-) -> list[list[int]]:
+):
     token_ids = tokenizer(
         text,
         add_special_tokens=False,
     )["input_ids"]
-
-    eos_token_id = tokenizer.eos_token_id
-    chunk_size = seq_length
-    if eos_token_id is not None:
-        if seq_length < 2:
-            raise ValueError("seq_length must fit at least one token and EOS")
-        chunk_size = seq_length - 1
-
-    chunks = []
-    for start in range(0, len(token_ids), chunk_size):
-        end = start + chunk_size
-        chunk = token_ids[start:end]
-        if eos_token_id is not None:
-            chunk = chunk + [eos_token_id]
-        if chunk:
-            chunks.append(chunk)
-    return chunks
+    if tokenizer.eos_token_id is not None:
+        token_ids = token_ids + [tokenizer.eos_token_id]
+    return token_ids
 
 
 def _make_packed_sample(
@@ -323,8 +308,12 @@ def _pack_texts(
     for text in texts:
         if not text:
             continue
-        for chunk in _tokenize_document(text, tokenizer, seq_length):
-            if len(input_ids) + len(chunk) > seq_length:
+        token_ids = _tokenize_document(text, tokenizer)
+        offset = 0
+
+        while offset < len(token_ids):
+            free_space = seq_length - len(input_ids)
+            if free_space == 0:
                 yield _make_packed_sample(
                     input_ids,
                     position_ids,
@@ -334,11 +323,15 @@ def _pack_texts(
                 position_ids = []
                 sequence_ids = []
                 sequence_id = 0
+                free_space = seq_length
 
+            end = min(offset + free_space, len(token_ids))
+            chunk = token_ids[offset:end]
             input_ids.extend(chunk)
             position_ids.extend(range(len(chunk)))
             sequence_ids.extend([sequence_id] * len(chunk))
             sequence_id += 1
+            offset = end
 
             if len(input_ids) == seq_length:
                 yield _make_packed_sample(
